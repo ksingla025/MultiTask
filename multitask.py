@@ -611,6 +611,3 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		final_embeddings = session.run(self.normalized_embeddings)
 		self.final_embeddings = final_embeddings
 		return self
-
-c = MultiTask()
-c.fit()
