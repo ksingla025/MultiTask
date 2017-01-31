@@ -288,7 +288,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 	def __init__(self, vocabulary_size=90000, embedding_size=200, batch_size=5,
 		multi_batch_size=5, task_batch_size=5, skip_window=2, num_sampled=64,
 		valid_size=16, valid_window=500, beam_length=20,task1_learning_rate=0.01,
-		num_steps=1400001, task1_start=20000, attention='true',task_tune='false',joint='true',logs_path='./tmp/tensorflow_logs/test', num_threads=10):
+		num_steps=1400001, task1_start=20000, task1_hidden=50, attention='true',
+		task_tune='false',joint='true',logs_path='./tmp/tensorflow_logs/test', num_threads=10):
 
 		# set parameters
 		self.vocabulary_size = vocabulary_size # size of vocabulary
@@ -309,6 +310,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		self.task1_start = task1_start # step to start task 1 : keep low for joint = "true"
 		self.logs_path = logs_path # path to log file for tensorboard
 		self.num_threads = num_threads # number of threads to use
+		self.task1_hidden = task1_hidden # neurons in hidden layer for prediction
 		#task1 parameters
 		self.task1_learning_rate = task1_learning_rate
 
@@ -330,10 +332,11 @@ class MultiTask(BaseEstimator, TransformerMixin):
 	def _load_task1_data(self,filename):
 
 		task1_file = Path(filename)
-
+		print(task1_file)
 		# check if valid file exists, so that we don't reshuffle again
 		if task1_file.is_file():
 			data_task1 = cPickle.load(open(filename, 'rb'))
+			print(data_task1[:2])
 			self.data_task1_test = data_task1[-530:]
 			data_task1_valid = data_task1[-1060:-530]
 			data_task1_train = data_task1[:-1060]
@@ -353,6 +356,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			for i in range(len(data_task1_valid)):
 				self.task1_valid_batch[i,:] = pad(data_task1_valid[i][0][:self.beam_length], 0, self.beam_length)
 				self.task1_valid_labels[i,:] = data_task1_valid[i][1]
+		print(len(data_task1_train))
 		return data_task1_train
 
 	def _init_graph(self):
@@ -431,15 +435,28 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			self.context_vector.set_shape([None, self.embedding_size])
 
+			# Store layers weight & bias
+			self.W = {
+			'h1': tf.Variable(tf.zeros([self.embedding_size, self.task1_hidden])),
+			'out': tf.Variable(tf.zeros([self.task1_hidden, 2]))
+			}
+			self.b = {
+			'b1': tf.Variable(tf.random_normal([self.task1_hidden])),
+			'out': tf.Variable(tf.random_normal([2]))
+			}
+
 			# Set model weights
-			self.W = tf.Variable(tf.zeros([self.embedding_size, 2]), name='Weights')
-			self.b = tf.Variable(tf.zeros([2]), name='Bias')
+#			self.W = tf.Variable(tf.zeros([self.embedding_size, 2]), name='Weights')
+#			self.b = tf.Variable(tf.zeros([2]), name='Bias')
+			
+			#Hidden layer
+			self.hidden_1 = tf.add(tf.matmul(self.context_vector, self.W['h1']), self.b['b1'])
 
 			# Construct model and encapsulating all ops into scopes, making
 			# Tensorboard's Graph visualization more convenient
 			with tf.name_scope('Task-Model'):
     			# Model
-				self.pred = tf.nn.softmax(tf.matmul(self.context_vector, self.W) + self.b) # Softmax
+				self.pred = tf.nn.softmax(tf.matmul(self.hidden_1, self.W['out']) + self.b['out']) # Softmax
 			with tf.name_scope('Task-Loss'):
     			# Minimize error using cross entropy
 				self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_task1_labels*tf.log(self.pred), reduction_indices=1))
@@ -485,8 +502,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 		#build validation batches, test data
 		#get task1 training data
-		data_task1_train = self._load_task1_data("task1.p")
-
+		data_task1_train = self._load_task1_data("./task1.p")
+		print(len(data_task1_train))
 		#self._load_task1_data("task1.p")
 #		self._init_graph()
 
