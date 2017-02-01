@@ -437,41 +437,33 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			self.embed = tf.nn.embedding_lookup(self.embeddings, self.train_task1_inputs)
 
-			self.embeddings_flat = tf.reshape(self.embed, [-1, self.embedding_size])
+			
 			# attention mechanism used or not
 			# if yes, self.attention = 'true'
 			# else self.attention = 'false'
 			if self.attention == 'true':
 
-				# initate variable for attention transformation
-				# weights and bias
-				input_shape = tf.shape(self.train_task1_inputs)
-				self.attention_trans = tf.Variable(tf.zeros([self.task_batch_size,
-					self.beam_length, self.attention_size]))
+				self.embeddings_flat = tf.reshape(self.embed, [-1, self.embedding_size])
 
-				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
-				 name='transformation_weights')
+				self.trans_weights = tf.Variable(
+				tf.random_uniform([self.embedding_size, self.attention_size], -1.0, 1.0),
+				name='transformation_weights')
+
+#				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
+#				 name='transformation_weights')
 				self.trans_bias = tf.Variable(tf.zeros([self.attention_size]), name='trans_bias')
-				
-#				self.attention_trans = batch_vm2(self.embed,self.trans_weights)
-	
-				# apply tanh to each batch and append to self.attention_trans
 
 				# task1 attention vector
 				self.attention_task1 = tf.Variable(
 					tf.random_uniform([1, self.attention_size], -1.0, 1.0),
 					name='attention_vector')
-							
-				# Compute alignment weights
-				#self.alignments = nn_ops.softmax(self.scores)
 
-				# Now calculate the attention-weighted vector.
+				# Now calculate the attention-weight vector.
 				self.keys_flat = tf.tanh(tf.add(tf.matmul(self.embeddings_flat,
 				 self.trans_weights), self.trans_bias))
-				
-				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed))
 
-				#self.alignments = array_ops.expand_dims(self.alignments, 2)
+				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed)[:-1] + [self.attention_size])
+#				self.keys = tf.reshape(self.keys_flat, [-1, self.beam_length, self.attention_size])
 
 				self.context_vector = math_ops.reduce_sum(self.attention_task1 * 
 					self.keys, [1])
