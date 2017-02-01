@@ -47,6 +47,30 @@ data_task1_index = 0
 
 # Utility Functions
 
+def batch_vm(v, m):
+  shape = tf.shape(v)
+  rank = shape.get_shape()[0].value
+  v = tf.expand_dims(v, rank)
+
+  vm = tf.mul(v, m)
+
+  return tf.reduce_sum(vm, rank-1)
+
+def batch_vm2(x, m):
+  [input_size, output_size] = m.get_shape().as_list()
+
+  input_shape = tf.shape(x)
+  batch_rank = input_shape.get_shape()[0].value - 1
+  batch_shape = input_shape[:batch_rank]
+  output_shape = tf.concat(0, [batch_shape, [output_size]])
+
+  x = tf.reshape(x, [-1, input_size])
+  y = tf.matmul(x, m)
+
+  y = tf.reshape(y, output_shape)
+
+  return y
+
 def _attn_mul_fun(keys, query):
   return math_ops.reduce_sum(keys * query, [2])
 
@@ -288,8 +312,9 @@ class MultiTask(BaseEstimator, TransformerMixin):
 	def __init__(self, vocabulary_size=90000, embedding_size=200, batch_size=5,
 		multi_batch_size=5, task_batch_size=5, skip_window=2, num_sampled=64,
 		valid_size=16, valid_window=500, beam_length=20,task1_learning_rate=0.01,
-		num_steps=1400001, task1_start=20000, task1_hidden=50, attention='true',
-		task_tune='false',joint='true',logs_path='./tmp/tensorflow_logs/test', num_threads=10):
+		num_steps=1400001, task1_start=20000, task1_hidden=50, attention='true', 
+		attention_size = 50, task_tune='false',joint='true',
+		logs_path='./tmp/tensorflow_logs/test', num_threads=10):
 
 		# set parameters
 		self.vocabulary_size = vocabulary_size # size of vocabulary
@@ -304,6 +329,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		self.valid_window = valid_window  # Only pick dev samples in the head of the distribution.
 		self.valid_examples = np.random.choice(self.valid_window, self.valid_size, replace=False)
 		self.attention = attention # attention "true"/"false"
+		self.attention_size = attention_size
 		self.task_tune = task_tune # tune embeddings for task or not "true"/"false"
 		self.joint = joint # joint training or not "true"/"false"
 		self.num_steps = num_steps # total number of steps
@@ -415,11 +441,31 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			# if yes, self.attention = 'true'
 			# else self.attention = 'false'
 			if self.attention == 'true':
+
+				# initate variable for attention transformation
+				# weights and bias
+				input_shape = tf.shape(self.train_task1_inputs)
+				self.attention_trans = tf.Variable(tf.zeros([self.task_batch_size,
+					self.beam_length, self.attention_size]))
+
+				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
+				 name='transformation_weights')
+				self.trans_bias = tf.Variable(tf.zeros([self.attention_size]), name='trans_bias')
+				
+#				self.attention_trans = batch_vm2(self.embed,self.trans_weights)
+
+				# apply tanh to each batch and append to self.attention_trans
+				for i in range(self.task_batch_size):
+					output = tf.nn.tanh(tf.matmul(self.embed[i,:,:], 
+						self.trans_weights) + self.trans_bias)
+					self.attention_trans[i].assign(output)
+
+
 				# task1 attention vector
 				self.attention_task1 = tf.Variable(
-					tf.random_uniform([1, self.embedding_size], -1.0, 1.0), name='attention_vector')
+					tf.random_uniform([1, self.attention_size], -1.0, 1.0), name='attention_vector')
 			
-				self.scores = _attn_mul_fun(self.embed,self.attention_task1)
+				self.scores = _attn_mul_fun(self.attention_trans,self.attention_task1)
 			
 				# Compute alignment weights
 				self.alignments = nn_ops.softmax(self.scores)
@@ -436,6 +482,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			self.context_vector.set_shape([None, self.embedding_size])
 
 			# Store layers weight & bias
+			'''
 			self.W = {
 			'h1': tf.Variable(tf.zeros([self.embedding_size, self.task1_hidden])),
 			'out': tf.Variable(tf.zeros([self.task1_hidden, 2]))
@@ -444,19 +491,20 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			'b1': tf.Variable(tf.random_normal([self.task1_hidden])),
 			'out': tf.Variable(tf.random_normal([2]))
 			}
+			'''
 
 			# Set model weights
-#			self.W = tf.Variable(tf.zeros([self.embedding_size, 2]), name='Weights')
-#			self.b = tf.Variable(tf.zeros([2]), name='Bias')
+			self.W = tf.Variable(tf.zeros([self.embedding_size, 2]), name='Weights')
+			self.b = tf.Variable(tf.zeros([2]), name='Bias')
 			
 			#Hidden layer
-			self.hidden_1 = tf.add(tf.matmul(self.context_vector, self.W['h1']), self.b['b1'])
+#			self.hidden_1 = tf.add(tf.matmul(self.context_vector, self.W['h1']), self.b['b1'])
 
 			# Construct model and encapsulating all ops into scopes, making
 			# Tensorboard's Graph visualization more convenient
 			with tf.name_scope('Task-Model'):
     			# Model
-				self.pred = tf.nn.softmax(tf.matmul(self.hidden_1, self.W['out']) + self.b['out']) # Softmax
+				self.pred = tf.nn.softmax(tf.matmul(self.context_vector, self.W) + self.b) # Softmax
 			with tf.name_scope('Task-Loss'):
     			# Minimize error using cross entropy
 				self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_task1_labels*tf.log(self.pred), reduction_indices=1))
@@ -470,7 +518,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
 			tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
-			tf.summary.scalar("task1_valid_accuracy", self.acc, collections=['task1-valid'])
+#			tf.summary.scalar("task1_valid_accuracy", self.acc, collections=['task1-valid'])
 
 			# Compute the cosine similarity between minibatch examples and all embeddings.
 			self.norm = tf.sqrt(tf.reduce_sum(tf.square(self.embeddings), 1,
@@ -491,7 +539,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			self.merged_summary_skip = tf.summary.merge_all('skip-gram')
 			self.merged_summary_task1 = tf.summary.merge_all('polarity-task')
-			self.merged_summary_task1_valid = tf.summary.merge_all('task1-valid')
+	#		self.merged_summary_task1_valid = tf.summary.merge_all('task1-valid')
 
 
 	def fit(self):
@@ -594,13 +642,21 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			if step % 2000 == 0 and step > self.task1_start:
 
-				_, summary = session.run([self.acc, self.merged_summary_task1_valid],
-					feed_dict={self.train_task1_inputs: self.task1_valid_batch, 
-					self.train_task1_labels: self.task1_valid_labels})
+				# read the validation data batch by batch and compute total accuracy
+				total_valid_accuracy = 0
+				for i in range(self.task_batch_size,len(self.task1_valid_batch)+self.task_batch_size,
+					self.task_batch_size):
 
-				valid_accuracy = self.acc.eval({self.train_task1_inputs: self.task1_valid_batch, 
-					self.train_task1_labels: self.task1_valid_labels}, session=session)
-				tf.summary.scalar("task1_valid_accuracy",valid_accuracy)
+					valid_accuracy = self.acc.eval({self.train_task1_inputs:
+					 self.task1_valid_batch[i-self.task_batch_size:i,:], 
+					 self.train_task1_labels: self.task1_valid_labels[i-self.task_batch_size:i,:]}, session=session)
+					
+					total_valid_accuracy = total_valid_accuracy + valid_accuracy
+
+				total_valid_accuracy = total_valid_accuracy / (len(self.task1_valid_batch) / self.task_batch_size )
+
+				print("Average valid accuracy at ", step, ": ", total_valid_accuracy)
+				summary = tf.Summary(value=[tf.Summary.Value(tag="task1_valid_accuracy", simple_value=total_valid_accuracy)])	
 				summary_writer.add_summary(summary, step)
 
 			if step % 2000 == 0:
