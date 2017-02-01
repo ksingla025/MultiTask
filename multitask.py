@@ -297,9 +297,9 @@ def generate_batch_task1(data_task1_train, task_batch_size, beam_length):
 		batch[i,:] = sent[0]
 		labels[i,:] = sent[1]
 		data_task1_index = (data_task1_index + 1) % len(data_task1_train)
-#		if data_task1_index == 0:
-#			print("shuffle task1 train data")
-#			random.shuffle(data_task1_train)
+		if data_task1_index == 0:
+			print("shuffle task1 train data")
+			random.shuffle(data_task1_train)
 
 	return batch, labels
 
@@ -437,6 +437,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			self.embed = tf.nn.embedding_lookup(self.embeddings, self.train_task1_inputs)
 
+			self.embeddings_flat = tf.reshape(self.embed, [-1, self.embedding_size])
 			# attention mechanism used or not
 			# if yes, self.attention = 'true'
 			# else self.attention = 'false'
@@ -453,28 +454,27 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.trans_bias = tf.Variable(tf.zeros([self.attention_size]), name='trans_bias')
 				
 #				self.attention_trans = batch_vm2(self.embed,self.trans_weights)
-
+	
 				# apply tanh to each batch and append to self.attention_trans
-				for i in range(self.task_batch_size):
-					output = tf.nn.tanh(tf.matmul(self.embed[i,:,:], 
-						self.trans_weights) + self.trans_bias)
-					self.attention_trans[i].assign(output)
-
 
 				# task1 attention vector
 				self.attention_task1 = tf.Variable(
-					tf.random_uniform([1, self.attention_size], -1.0, 1.0), name='attention_vector')
-			
-				self.scores = _attn_mul_fun(self.attention_trans,self.attention_task1)
-			
+					tf.random_uniform([1, self.attention_size], -1.0, 1.0),
+					name='attention_vector')
+							
 				# Compute alignment weights
-				self.alignments = nn_ops.softmax(self.scores)
+				#self.alignments = nn_ops.softmax(self.scores)
 
 				# Now calculate the attention-weighted vector.
-				self.alignments = array_ops.expand_dims(self.alignments, 2)
+				self.keys_flat = tf.tanh(tf.add(tf.matmul(self.embeddings_flat,
+				 self.trans_weights), self.trans_bias))
+				
+				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed))
 
-				self.context_vector = math_ops.reduce_sum(self.alignments * 
-					self.embed, [1])
+				#self.alignments = array_ops.expand_dims(self.alignments, 2)
+
+				self.context_vector = math_ops.reduce_sum(self.attention_task1 * 
+					self.keys, [1])
 
 			else:
 				self.context_vector = math_ops.reduce_mean(self.embed, [1])
