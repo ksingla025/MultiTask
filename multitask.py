@@ -450,7 +450,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				name='transformation_weights')
 
 #				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
-#				 name='transformation_weights')
+#					 name='transformation_weights')
 				self.trans_bias = tf.Variable(tf.zeros([self.attention_size]), name='trans_bias')
 
 				# task1 attention vector
@@ -462,7 +462,9 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.keys_flat = tf.tanh(tf.add(tf.matmul(self.embeddings_flat,
 				 self.trans_weights), self.trans_bias))
 
-				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed)[:-1] + [self.attention_size])
+				self.keys = tf.reshape(self.keys_flat, tf.concat(0,tf.shape(self.embed)[:-1], [self.attention_size]))
+
+#				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed)[:-1] + [self.attention_size])
 #				self.keys = tf.reshape(self.keys_flat, [-1, self.beam_length, self.attention_size])
 
 				self.context_vector = math_ops.reduce_sum(self.attention_task1 * 
