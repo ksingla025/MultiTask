@@ -462,13 +462,18 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.keys_flat = tf.tanh(tf.add(tf.matmul(self.embeddings_flat,
 				 self.trans_weights), self.trans_bias))
 
-				self.keys = tf.reshape(self.keys_flat, tf.concat(0,tf.shape(self.embed)[:-1], [self.attention_size]))
+				self.keys = tf.reshape(self.keys_flat, tf.concat(0,[tf.shape(self.embed)[:-1], [self.attention_size]]))
 
 #				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed)[:-1] + [self.attention_size])
 #				self.keys = tf.reshape(self.keys_flat, [-1, self.beam_length, self.attention_size])
+				self.scores = _attn_mul_fun(self.keys, self.attention_task1)
 
-				self.context_vector = math_ops.reduce_sum(self.attention_task1 * 
-					self.keys, [1])
+				self.alignments = nn_ops.softmax(self.scores)
+
+				self.alignments = array_ops.expand_dims(self.alignments,2)
+
+				self.context_vector = math_ops.reduce_sum(self.alignments * 
+					self.embed, [1])
 
 			else:
 				self.context_vector = math_ops.reduce_mean(self.embed, [1])
