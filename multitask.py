@@ -37,39 +37,25 @@ DATA_BI = DATA+"parallel/"
 DATA_MONO = DATA+"mono/"
 
 DATA_TASK = DATA+"task/"
-
+DATA_PROCESSED = DATA +"processed/"
 #logs_path = './tmp/tensorflow_logs/new/'
 
 # initialize data_indexes
 data_mono_index = 0
 data_bi_index = 0
-data_task1_index = 0
+data_task_mlp_index = 0
 
 # Utility Functions
 
-def batch_vm(v, m):
-  shape = tf.shape(v)
-  rank = shape.get_shape()[0].value
-  v = tf.expand_dims(v, rank)
+def preprocess_text(text):
+	
+	text = re.sub(r'\w+:\/{2}[\d\w-]+(\.[\d\w-]+)*(?:(?:\/[^\s/]*))*', '', text)
+	text = re.sub(r'[^\w\s]','',text) # remove all punctuations
+	text = re.sub(' +',' ',text) # remove multiple spaces
+	text = text.lower()
+	text = text.strip() # remove ending space
 
-  vm = tf.mul(v, m)
-
-  return tf.reduce_sum(vm, rank-1)
-
-def batch_vm2(x, m):
-  [input_size, output_size] = m.get_shape().as_list()
-
-  input_shape = tf.shape(x)
-  batch_rank = input_shape.get_shape()[0].value - 1
-  batch_shape = input_shape[:batch_rank]
-  output_shape = tf.concat(0, [batch_shape, [output_size]])
-
-  x = tf.reshape(x, [-1, input_size])
-  y = tf.matmul(x, m)
-
-  y = tf.reshape(y, output_shape)
-
-  return y
+	return text
 
 def _attn_mul_fun(keys, query):
   return math_ops.reduce_sum(keys * query, [2])
@@ -88,12 +74,14 @@ def read_data(lang_ext=1):
 		f = open(filename,'r')
 		ext = ":ID:" + filename.split(".")[-1]
 		for line in f:
-			# lang_ext is sticked to each token
-			if lang_ext == 1:
-				tokens = [x + ext for x in line.split()]
-			else:
-				tokens = line.split()
-			data_mono.append(tokens)
+			if line != '':
+				line = preprocess_text(line)
+				# lang_ext is sticked to each token
+				if lang_ext == 1:
+					tokens = [x + ext for x in line.split()]
+				else:
+					tokens = line.split()
+				data_mono.append(tokens)
 
 	data_bi = []
 	bi_files = glob.glob(DATA_BI+"*")
@@ -104,52 +92,68 @@ def read_data(lang_ext=1):
 		tgt_lang = ":ID:" + filename.split(".")[-1].split("-")[1]
 		for sentence_pair_line in sentence_pair_file:
 			sentence_pair_line = sentence_pair_line.rstrip()
-			sourcel_line, target_line = sentence_pair_line.split(" ||| ")
-			source_tokens, target_tokens = sourcel_line.split(' '), target_line.split(' ')
-			if lang_ext == 1:
-				source_tokens = [x + src_lang for x in source_tokens]
-				target_tokens = [x + tgt_lang for x in target_tokens]
+			source_line, target_line = sentence_pair_line.split(" ||| ")
+
+			source_line = preprocess_text(source_line)
+			target_line = preprocess_text(target_line)
+
+			if source_line != '' and target_line != '':
+				source_tokens, target_tokens = source_line.split(' '), target_line.split(' ')
+				if lang_ext == 1:
+					source_tokens = [x + src_lang for x in source_tokens]
+					target_tokens = [x + tgt_lang for x in target_tokens]
 #			source_tokens.extend(['<eos>'])
 #			target_tokens.extend(['<eos>'])
-			data_bi.append([source_tokens,target_tokens])
+				data_bi.append([source_tokens,target_tokens])
 
 	print(len(data_mono),len(data_bi))
 	return data_mono,data_bi
 
-def read_dataset_task(dictionary,lang_ext="en",taskID="polarity"):
-	task_data = []
-	num_classes = 2
+# mlp : multilingual polarity
+def read_dataset_task_mlp(dictionary,filename):
+	data = {}
+	num_classes = 3
 	class_counter = 0
-	classes = []
-	task_files = glob.glob(DATA_TASK+taskID+"/*")
-	print(" Reading data for", taskID,"prediction task")
+	classes = {}
+#	classes_index = [0]*num_classes
+	task_files = glob.glob(DATA_TASK+"multi-3-way-polarity/*")
+	print(" Reading data for", "multi-3-way-polarity","prediction task")
 	for file in task_files:
 		print(file)
-		classes_index = [0]*num_classes
-		class_name = ntpath.basename(file).split(".")[-1]
-		if class_name not in classes:
-			classes.append(class_name)
-			classes_index[class_counter] = 1
-			class_counter = class_counter + 1
-
-		class_file = open(file,'r')
-#		task_data[class_name] = []
-		for line in class_file:
+		read_file = open(file,'r')
+		lang_ext = file.split("_")[-1].split(".")[0]
+		data[lang_ext] = {}
+		task_data = []
+		for line in read_file:
+			line = preprocess_text(line)
+			line = line.split("\t")
+			classes_index = [0]*num_classes
+			if line[1] not in classes:
+				classes[line[1]] = class_counter
+				class_counter = class_counter + 1
+			classes_index[classes[line[1]]] = 1
 			task_entry = []
-			line = re.sub(r'[^\w\s]','',line)
-			line = line.strip().split()
 			line_ID = []
-			for word in line:
-				word = word+":ID:"+lang_ext
-				ID = dictionary.get(word)
-				if ID is not None:
-					line_ID.append(ID)
-			if line_ID != []:
-				task_entry.append(line_ID)
-				task_entry.append(classes_index)
-				task_data.append(task_entry)
+			if len(line) > 2:
+				line = line[2].split()
+				for word in line:
+					word = word+":ID:"+lang_ext
+					ID = dictionary.get(word)
+					if ID is not None:
+						line_ID.append(ID)
+				if line_ID != []:
+					task_entry.append(line_ID)
+					task_entry.append(classes_index)
+					task_data.append(task_entry)
+	
+		random.shuffle(task_data)
 
-	return task_data
+		# for each language divide data into train, dev & test
+		data[lang_ext]['train'] = task_data[:int(len(task_data)*0.90)]
+		data[lang_ext]['dev'] = task_data[int(len(task_data)*0.90):int(len(task_data)*0.95)]
+		data[lang_ext]['test'] = task_data[int(len(task_data)*0.95):]
+
+	cPickle.dump(data, open(filename, 'wb'))
 
 def build_dataset(words, vocabulary_size = 200000):
 	'''
@@ -161,9 +165,15 @@ def build_dataset(words, vocabulary_size = 200000):
 	vocabulary_size: maximum number of top occurring tokens to produce, 
 		rare tokens will be replaced by 'UNK'
 	'''
+	print("Build Dataset and dictionaries")
+
+#	mono = open(DATA_PROCESSED+"mono.p")
+#	bi = open(DATA_PROCESSED+"bi.p")
+
 	seq_mono = words[0]
 	seq_bi = words[1]
 	words_total = []
+
 
 	for seq in seq_mono:
 		words_total.extend(seq)
@@ -198,6 +208,9 @@ def build_dataset(words, vocabulary_size = 200000):
 			seq[i] = index
 		data_mono.append(seq)
 
+	cPickle.dump(data_mono, open(DATA_PROCESSED + 'mono.p', 'wb'))
+
+	del data_mono # saving memory 
 	## get bi-data indexed
 	for sent_pair in seq_bi:
 		pair = []
@@ -212,9 +225,16 @@ def build_dataset(words, vocabulary_size = 200000):
 			pair.append(seq)
 		data_bi.append(pair)
 
+	cPickle.dump(data_bi, open(DATA_PROCESSED + 'bi.p', 'wb'))
+	
+	del data_bi # saving memory	
+
 	count[0][1] = unk_count # list of tuples (word,count)
 	reverse_dictionary = dict(zip(dictionary.values(), dictionary.keys()))
-	return data_mono, data_bi, count, dictionary, reverse_dictionary
+
+	cPickle.dump(dictionary, open(DATA_PROCESSED + 'dictionary.p', 'wb'))
+	cPickle.dump(reverse_dictionary, open(DATA_PROCESSED + 'reverse_dictionary.p', 'wb'))
+	cPickle.dump(count, open(DATA_PROCESSED + 'count.p', 'wb'))
 
 def generate_batch_mono_skip(data_mono, batch_size, skip_window):
 	'''
@@ -248,7 +268,7 @@ def generate_batch_mono_skip(data_mono, batch_size, skip_window):
 		batch_final[i] = batch[i]
 	return batch_final, labels_final
 
-def generate_batch_multi_skip(data_bi, multi_batch_size):
+def generate_batch_multi_skip(data_bi, multi_batch_size, window=5):
 	'''
 	1. generates a batch from source to target and target to source
 	2. Predict all target words given a source word
@@ -259,12 +279,33 @@ def generate_batch_multi_skip(data_bi, multi_batch_size):
 	for i in range(multi_batch_size):
 		sent1 = data_bi[data_bi_index][0]
 		sent2 = data_bi[data_bi_index][1]
+		sent1_len = float(len(sent1))
+		sent2_len = float(len(sent2))
 		for j in range(len(sent1)):
-			for k in range(len(sent2)):
+			alignment = int((j/sent1_len) * sent2_len)
+			window_high = alignment + window
+			window_low = alignment - window
+			if window_low < 0:
+				window_low = 0
+
+			for k in sent2[alignment:window_high]:
+				# l1 -> l2
 				batch.append(sent1[j])
-				batch.append(sent2[k])
-				labels.append(sent2[k])
+				labels.append(k)
+
+				# l2 -> l1
+				batch.append(k)
 				labels.append(sent1[j])
+
+			for k in sent2[window_low:alignment]:
+				# l1 -> l2
+				batch.append(sent1[j])
+				labels.append(k)
+
+				# l2 -> l1
+				batch.append(k)
+				labels.append(sent1[j])
+
 		data_bi_index = (data_bi_index + 1) % len(data_bi)
 		if data_bi_index == 0:
 			print("shuffle multi-skip data")
@@ -280,41 +321,39 @@ def generate_batch_multi_skip(data_bi, multi_batch_size):
 		batch_final[i] = batch[i]
 	return batch_final, labels_final
 
-def generate_batch_task1(data_task1_train, task_batch_size, beam_length):
+def generate_batch_task_mlp(data_task_mlp_train, task_batch_size, sen_length):
 	'''
 	generates CBOW batch of the task
 	'''
-	global data_task1_index
-#	beam_length = 20
+	global data_task_mlp_index
+#	sen_length = 20
 	batch = []
 	labels = []
-	batch = np.ndarray(shape=(task_batch_size,beam_length), dtype=np.int32)
-	labels = np.ndarray(shape=(task_batch_size, 2), dtype=np.int32)
+	batch = np.ndarray(shape=(task_batch_size,sen_length), dtype=np.int32)
+	labels = np.ndarray(shape=(task_batch_size, 3), dtype=np.int32)
 	for i in range(task_batch_size):
-		sent = data_task1_train[data_task1_index]
-		sent[0] = pad(sent[0][:beam_length], 0, beam_length)
+		sent = data_task_mlp_train[data_task_mlp_index]
+		sent[0] = pad(sent[0][:sen_length], 0, sen_length)
 #		print(sent[0])
 		batch[i,:] = sent[0]
 		labels[i,:] = sent[1]
-		data_task1_index = (data_task1_index + 1) % len(data_task1_train)
-		if data_task1_index == 0:
-			print("shuffle task1 train data")
-			random.shuffle(data_task1_train)
+		data_task_mlp_index = (data_task_mlp_index + 1) % len(data_task_mlp_train)
+		if data_task_mlp_index == 0:
+			print("shuffle task_mlp train data")
+			random.shuffle(data_task_mlp_train)
 
 	return batch, labels
 
 
 
-
-
 class MultiTask(BaseEstimator, TransformerMixin):
 
-	def __init__(self, vocabulary_size=90000, embedding_size=200, batch_size=5,
-		multi_batch_size=5, task_batch_size=5, skip_window=2, num_sampled=64,
-		valid_size=16, valid_window=500, beam_length=20,task1_learning_rate=0.01,
-		num_steps=1400001, task1_start=20000, task1_hidden=50, attention='true', 
-		attention_size = 50, task_tune='false',joint='true',
-		logs_path='./tmp/tensorflow_logs/test', num_threads=10):
+	def __init__(self, vocabulary_size=150000, embedding_size=200, batch_size=5,
+		multi_batch_size=5, task_batch_size=20, skip_window=2, num_sampled=64,
+		valid_size=16, valid_window=500, skip_gram_learning_rate=0.01, sen_length=20,
+		task_mlp_learning_rate=0.1,num_steps=1400001, task_mlp_start=20000, 
+		task_mlp_hidden=50, attention='true', attention_size = 150, task_tune='false', 
+		joint='true', logs_path='./tmp/tensorflow_logs/test', num_threads=10,num_classes=3):
 
 		# set parameters
 		self.vocabulary_size = vocabulary_size # size of vocabulary
@@ -323,7 +362,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		self.multi_batch_size = multi_batch_size # multi-lingual batch size
 		self.task_batch_size = task_batch_size # task batch size
 		self.skip_window = skip_window # skip window for mono-skip gram batch
-		self.beam_length = beam_length # upper bar on task input sentence
+		self.sen_length = sen_length # upper bar on task input sentence
 		self.num_sampled = num_sampled # Number of negative examples to sample.
 		self.valid_size = valid_size    # Random set of words to evaluate similarity on.
 		self.valid_window = valid_window  # Only pick dev samples in the head of the distribution.
@@ -333,13 +372,14 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		self.task_tune = task_tune # tune embeddings for task or not "true"/"false"
 		self.joint = joint # joint training or not "true"/"false"
 		self.num_steps = num_steps # total number of steps
-		self.task1_start = task1_start # step to start task 1 : keep low for joint = "true"
+		self.task_mlp_start = task_mlp_start # step to start task 1 : keep low for joint = "true"
 		self.logs_path = logs_path # path to log file for tensorboard
 		self.num_threads = num_threads # number of threads to use
-		self.task1_hidden = task1_hidden # neurons in hidden layer for prediction
-		#task1 parameters
-		self.task1_learning_rate = task1_learning_rate
-
+		self.task_mlp_hidden = task_mlp_hidden # neurons in hidden layer for prediction
+		self.skip_gram_learning_rate = skip_gram_learning_rate
+		#task_mlp parameters
+		self.task_mlp_learning_rate = task_mlp_learning_rate
+		self.num_classes = num_classes
 		self._init_graph()
 		
 
@@ -347,43 +387,64 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 	def _build_dictionaries(self):
 
-		data = read_data(lang_ext=1)
-		data_mono, data_bi, count, dictionary, reverse_dictionary = build_dataset(data,self.vocabulary_size)
-		self.reverse_dictionary = reverse_dictionary
-		self.dictionary = dictionary
-		self.count = count
+		#check if data/processed/mono.p exists
+		data_file = Path(DATA_PROCESSED+"mono.p")
+		if data_file.is_file():
+			print("Loading raw text from previous files")
+		else:
+			#use this if making processed files
+			print("No previous data files found : Creating new files")
+			data = read_data(lang_ext=1)
+			build_dataset(data,self.vocabulary_size)
 
+		print("Loading Data Files")
+		data_mono = cPickle.load(open(DATA_PROCESSED+"mono.p", 'rb'))
+		data_bi = cPickle.load(open(DATA_PROCESSED+"bi.p", 'rb'))
+		self.dictionary = cPickle.load(open(DATA_PROCESSED+"dictionary.p", 'rb'))
+		self.reverse_dictionary = cPickle.load(open(DATA_PROCESSED+"reverse_dictionary.p", 'rb'))
+		self.count = cPickle.load(open(DATA_PROCESSED+"count.p", 'rb'))
 		return data_mono,data_bi
 
-	def _load_task1_data(self,filename):
+	def _load_task_mlp_data(self,filename,train_ext='en'):
 
-		task1_file = Path(filename)
-		print(task1_file)
+
+		task_mlp_file = Path(filename)
+		print(task_mlp_file)
 		# check if valid file exists, so that we don't reshuffle again
-		if task1_file.is_file():
-			data_task1 = cPickle.load(open(filename, 'rb'))
-			print(data_task1[:2])
-			self.data_task1_test = data_task1[-530:]
-			data_task1_valid = data_task1[-1060:-530]
-			data_task1_train = data_task1[:-1060]
-			self.task1_valid_batch = np.ndarray(shape=(len(data_task1_valid),self.beam_length), dtype=np.int32)
-			self.task1_valid_labels = np.ndarray(shape=(len(data_task1_valid),2), dtype=np.int32)
-			for i in range(len(data_task1_valid)):
-				self.task1_valid_batch[i,:] = pad(data_task1_valid[i][0][:self.beam_length], 0, self.beam_length)
-				self.task1_valid_labels[i,:] = data_task1_valid[i][1]
+		if task_mlp_file.is_file():
+			print("Task data loaded from previous file")
 		else:
-			data_task1 = read_dataset_task(self.dictionary,lang_ext="en",taskID="polarity")
-			random.shuffle(data_task1)
-			self.data_task1_test = data_task1[-530:]
-			data_task1_valid = data_task1[-1060:-530]
-			data_task1_train = data_task1[:-1060]
-			self.task1_valid_batch = np.ndarray(shape=(len(data_task1_valid),self.beam_length), dtype=np.int32)
-			self.task1_valid_labels = np.ndarray(shape=(len(data_task1_valid),2), dtype=np.int32)
-			for i in range(len(data_task1_valid)):
-				self.task1_valid_batch[i,:] = pad(data_task1_valid[i][0][:self.beam_length], 0, self.beam_length)
-				self.task1_valid_labels[i,:] = data_task1_valid[i][1]
-		print(len(data_task1_train))
-		return data_task1_train
+			print("Creating new task data")
+			# creates mlp.p in data/processed folder
+			read_dataset_task_mlp(self.dictionary,filename)
+		
+		#load task dataset
+		data_task_mlp = cPickle.load(open(filename, 'rb'))
+
+		# validation data-sets
+		data_task_mlp_en_valid = data_task_mlp['en']['dev']
+		data_task_mlp_es_valid = data_task_mlp['es']['dev']
+		
+		# mention training data
+		data_task_mlp_train = data_task_mlp['en']['train']
+
+		# create batch for calculating dev/valid accuracy
+		# 1. English
+		self.task_mlp_en_valid_batch = np.ndarray(shape=(len(data_task_mlp_en_valid),self.sen_length), dtype=np.int32)
+		self.task_mlp_en_valid_labels = np.ndarray(shape=(len(data_task_mlp_en_valid),self.num_classes), dtype=np.int32)
+		for i in range(len(data_task_mlp_en_valid)):
+			self.task_mlp_en_valid_batch[i,:] = pad(data_task_mlp_en_valid[i][0][:self.sen_length], 0, self.sen_length)
+			self.task_mlp_en_valid_labels[i,:] = data_task_mlp_en_valid[i][1]
+
+		# 2. Spanish
+		self.task_mlp_es_valid_batch = np.ndarray(shape=(len(data_task_mlp_es_valid),self.sen_length), dtype=np.int32)
+		self.task_mlp_es_valid_labels = np.ndarray(shape=(len(data_task_mlp_es_valid),self.num_classes), dtype=np.int32)
+		for i in range(len(data_task_mlp_es_valid)):
+			self.task_mlp_es_valid_batch[i,:] = pad(data_task_mlp_es_valid[i][0][:self.sen_length], 0, self.sen_length)
+			self.task_mlp_es_valid_labels[i,:] = data_task_mlp_es_valid[i][1]
+
+#		print(len(data_task_mlp_train))
+		return data_task_mlp_train
 
 	def _init_graph(self):
 
@@ -402,7 +463,11 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				name='embeddings')
 			self.train_skip_inputs = tf.placeholder(tf.int32, name='skip-gram-input')
 			self.train_skip_labels = tf.placeholder(tf.int32, name='skip-gram-output')
+			
 			self.valid_dataset = tf.constant(self.valid_examples, dtype=tf.int32, name = 'valid-dataset')
+
+			# step to mamnage decay
+			self.global_step = tf.Variable(0, trainable=False)
 
 			# Look up embeddings for skip inputs.
 			self.embed = tf.nn.embedding_lookup(self.embeddings, self.train_skip_inputs)
@@ -424,18 +489,25 @@ class MultiTask(BaseEstimator, TransformerMixin):
 						num_classes=self.vocabulary_size))
 
 			with tf.name_scope('SGD'):
+				self.learning_rate = tf.train.exponential_decay(self.skip_gram_learning_rate, self.global_step,
+                                           50000, 0.96, staircase=True)
+		#		self.learning_step = (tf.train.GradientDescentOptimizer(self.learning_rate)
+		#			.minimize(self.skip_loss, global_step=self.global_step))
 				# Construct the SGD optimizer using a learning rate of 1.0.
-				self.skip_optimizer = tf.train.GradientDescentOptimizer(0.1).minimize(self.skip_loss)
+
+				self.skip_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.skip_loss,
+				 global_step=self.global_step)
+		#		self.skip_optimizer = tf.train.GradientDescentOptimizer(self.skip_gram_learning_rate).minimize(self.skip_loss)
 
 			# Create a summary to monitor cost tensor
 			tf.summary.scalar("skip_loss", self.skip_loss, collections=['skip-gram'])
 
-			#------------------------ Task1 Loss and Optimizer ---------------------
+			#------------------------ task_mlp Loss and Optimizer ---------------------
 
-			self.train_task1_inputs = tf.placeholder(tf.int32, name='task1-input')
-			self.train_task1_labels = tf.placeholder(tf.float32, [None, 2], name='task1-output')
-
-			self.embed = tf.nn.embedding_lookup(self.embeddings, self.train_task1_inputs)
+			self.train_task_mlp_inputs = tf.placeholder(tf.int32, name='task_mlp-input')
+			self.train_task_mlp_labels = tf.placeholder(tf.float32, [None, self.num_classes], name='task_mlp-output')
+			self.keep_prob = tf.placeholder("float") 
+			self.embed = tf.nn.embedding_lookup(self.embeddings, self.train_task_mlp_inputs)
 
 			
 			# attention mechanism used or not
@@ -445,28 +517,31 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 				self.embeddings_flat = tf.reshape(self.embed, [-1, self.embedding_size])
 
-				self.trans_weights = tf.Variable(
-				tf.random_uniform([self.embedding_size, self.attention_size], -1.0, 1.0),
-				name='transformation_weights')
+				self.embeddings_flat = tf.nn.dropout(self.embeddings_flat, self.keep_prob)
+				# zeros insted of random uniform
+				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
+				 name='transformation_weights')
 
 #				self.trans_weights = tf.Variable(tf.zeros([self.embedding_size, self.attention_size]),
 #					 name='transformation_weights')
 				self.trans_bias = tf.Variable(tf.zeros([self.attention_size]), name='trans_bias')
 
-				# task1 attention vector
-				self.attention_task1 = tf.Variable(
+				# task_mlp attention vector
+				self.attention_task_mlp = tf.Variable(
 					tf.random_uniform([1, self.attention_size], -1.0, 1.0),
 					name='attention_vector')
 
 				# Now calculate the attention-weight vector.
 				self.keys_flat = tf.tanh(tf.add(tf.matmul(self.embeddings_flat,
-				 self.trans_weights), self.trans_bias))
+					self.trans_weights), self.trans_bias))
+
+				self.keys_flat = tf.nn.dropout(self.keys_flat, self.keep_prob)
 
 				self.keys = tf.reshape(self.keys_flat, tf.concat(0,[tf.shape(self.embed)[:-1], [self.attention_size]]))
 
 #				self.keys = tf.reshape(self.keys_flat, tf.shape(self.embed)[:-1] + [self.attention_size])
-#				self.keys = tf.reshape(self.keys_flat, [-1, self.beam_length, self.attention_size])
-				self.scores = _attn_mul_fun(self.keys, self.attention_task1)
+#				self.keys = tf.reshape(self.keys_flat, [-1, self.sen_length, self.attention_size])
+				self.scores = _attn_mul_fun(self.keys, self.attention_task_mlp)
 
 				self.alignments = nn_ops.softmax(self.scores)
 
@@ -475,30 +550,20 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.context_vector = math_ops.reduce_sum(self.alignments * 
 					self.embed, [1])
 
+				self.context_vector = tf.nn.dropout(self.context_vector, self.keep_prob)
+
 			else:
 				self.context_vector = math_ops.reduce_mean(self.embed, [1])
 
+
+
 			self.context_vector.set_shape([None, self.embedding_size])
 
-			# Store layers weight & bias
-			'''
-			self.W = {
-			'h1': tf.Variable(tf.zeros([self.embedding_size, self.task1_hidden])),
-			'out': tf.Variable(tf.zeros([self.task1_hidden, 2]))
-			}
-			self.b = {
-			'b1': tf.Variable(tf.random_normal([self.task1_hidden])),
-			'out': tf.Variable(tf.random_normal([2]))
-			}
-			'''
 
 			# Set model weights
-			self.W = tf.Variable(tf.zeros([self.embedding_size, 2]), name='Weights')
-			self.b = tf.Variable(tf.zeros([2]), name='Bias')
+			self.W = tf.Variable(tf.zeros([self.embedding_size, self.num_classes]), name='Weights')
+			self.b = tf.Variable(tf.zeros([self.num_classes]), name='Bias')
 			
-			#Hidden layer
-#			self.hidden_1 = tf.add(tf.matmul(self.context_vector, self.W['h1']), self.b['b1'])
-
 			# Construct model and encapsulating all ops into scopes, making
 			# Tensorboard's Graph visualization more convenient
 			with tf.name_scope('Task-Model'):
@@ -506,18 +571,22 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.pred = tf.nn.softmax(tf.matmul(self.context_vector, self.W) + self.b) # Softmax
 			with tf.name_scope('Task-Loss'):
     			# Minimize error using cross entropy
-				self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_task1_labels*tf.log(self.pred), reduction_indices=1))
+				self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_task_mlp_labels*tf.log(self.pred), reduction_indices=1))
 			with tf.name_scope('Task-SGD'):
+				self.learning_rate = tf.train.exponential_decay(self.task_mlp_learning_rate, self.global_step,
+                                           50000, 0.96, staircase=True)
+
     			# Gradient Descent
-				self.task1_optimizer = tf.train.GradientDescentOptimizer(self.task1_learning_rate).minimize(self.cost)
+    			self.task_mlp_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.cost,
+				 global_step=self.global_step)
+#				self.task_mlp_optimizer = tf.train.GradientDescentOptimizer(self.task_mlp_learning_rate).minimize(self.cost)
 			with tf.name_scope('Task-Accuracy'):
     			# Accuracy
-				self.acc = tf.equal(tf.argmax(self.pred, 1), tf.argmax(self.train_task1_labels, 1))
+				self.acc = tf.equal(tf.argmax(self.pred, 1), tf.argmax(self.train_task_mlp_labels, 1))
 				self.acc = tf.reduce_mean(tf.cast(self.acc, tf.float32))
 
 			tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
 			tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
-#			tf.summary.scalar("task1_valid_accuracy", self.acc, collections=['task1-valid'])
 
 			# Compute the cosine similarity between minibatch examples and all embeddings.
 			self.norm = tf.sqrt(tf.reduce_sum(tf.square(self.embeddings), 1,
@@ -537,21 +606,24 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			self.saver = tf.train.Saver()
 
 			self.merged_summary_skip = tf.summary.merge_all('skip-gram')
-			self.merged_summary_task1 = tf.summary.merge_all('polarity-task')
-	#		self.merged_summary_task1_valid = tf.summary.merge_all('task1-valid')
+			self.merged_summary_task_mlp = tf.summary.merge_all('polarity-task')
+	#		self.merged_summary_task_mlp_valid = tf.summary.merge_all('task_mlp-valid')
 
 
 	def fit(self):
 
 		#build dictionaries
 		#get mono and parallel data
+
 		data_mono, data_bi = self._build_dictionaries()
 
+
 		#build validation batches, test data
-		#get task1 training data
-		data_task1_train = self._load_task1_data("./task1.p")
-		print(len(data_task1_train))
-		#self._load_task1_data("task1.p")
+		#get task_mlp training data
+		data_task_mlp_train = self._load_task_mlp_data(DATA_PROCESSED+ "mlp.p")
+
+		print(len(data_task_mlp_train))
+		#self._load_task_mlp_data("task_mlp.p")
 #		self._init_graph()
 
 		# create a session
@@ -564,7 +636,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		session.run(self.init_op)
 
 		average_loss = 0
-		task1_average_loss = 0
+		task_mlp_average_loss = 0
 
 		# op to write logs to Tensorboard
 		summary_writer = tf.summary.FileWriter(self.logs_path, graph=self.graph)
@@ -575,19 +647,19 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 			if self.joint == 'true':
 
-				if step > self.task1_start:
-					task1_batch_inputs, task1_batch_labels = generate_batch_task1(data_task1_train, 
-						self.task_batch_size,self.beam_length)
+				if step > self.task_mlp_start:
+					task_mlp_batch_inputs, task_mlp_batch_labels = generate_batch_task_mlp(data_task_mlp_train, 
+						self.task_batch_size,self.sen_length)
+
+					task_mlp_feed_dict = {self.train_task_mlp_inputs: task_mlp_batch_inputs,
+					self.train_task_mlp_labels: task_mlp_batch_labels, self.keep_prob: 0.7}
 					
-					task1_feed_dict = {self.train_task1_inputs: task1_batch_inputs,
-					self.train_task1_labels: task1_batch_labels}
-					
-					_, task1_loss_val, summary = session.run([self.task1_optimizer, self.cost,
-						self.merged_summary_task1], feed_dict=task1_feed_dict)
+					_, task_mlp_loss_val, summary = session.run([self.task_mlp_optimizer, self.cost,
+						self.merged_summary_task_mlp], feed_dict=task_mlp_feed_dict)
 					
 					summary_writer.add_summary(summary, step)
 
-					task1_average_loss += task1_loss_val
+					task_mlp_average_loss += task_mlp_loss_val
 				
 				if step % 2 == 0:
 
@@ -608,19 +680,19 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			
 			if self.joint == 'false':
 
-				if step > self.task1_start:
-					task1_batch_inputs, task1_batch_labels = generate_batch_task1(data_task1_train, 
-						self.task_batch_size, self.beam_length)
+				if step > self.task_mlp_start:
+					task_mlp_batch_inputs, task_mlp_batch_labels = generate_batch_task_mlp(data_task_mlp_train, 
+						self.task_batch_size, self.sen_length)
 					
-					task1_feed_dict = {self.train_task1_inputs: task1_batch_inputs,
-					self.train_task1_labels: task1_batch_labels}
+					task_mlp_feed_dict = {self.train_task_mlp_inputs: task_mlp_batch_inputs,
+					self.train_task_mlp_labels: task_mlp_batch_labels, self.keep_prob: 0.7}
 					
-					_, task1_loss_val, summary = session.run([self.task1_optimizer, self.cost,
-						self.merged_summary_task1], feed_dict=task1_feed_dict)
+					_, task_mlp_loss_val, summary = session.run([self.task_mlp_optimizer, self.cost,
+						self.merged_summary_task_mlp], feed_dict=task_mlp_feed_dict)
 					
 					summary_writer.add_summary(summary, step)
 
-					task1_average_loss += task1_loss_val
+					task_mlp_average_loss += task_mlp_loss_val
 				
 				else:
 
@@ -639,35 +711,39 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 					average_loss += loss_val
 
-			if step % 2000 == 0 and step > self.task1_start:
+			if step % 2000 == 0 and step > self.task_mlp_start:
 
 				# read the validation data batch by batch and compute total accuracy
 				total_valid_accuracy = 0
-				for i in range(self.task_batch_size,len(self.task1_valid_batch)+self.task_batch_size,
-					self.task_batch_size):
 
-					valid_accuracy = self.acc.eval({self.train_task1_inputs:
-					 self.task1_valid_batch[i-self.task_batch_size:i,:], 
-					 self.train_task1_labels: self.task1_valid_labels[i-self.task_batch_size:i,:]}, session=session)
-					
-					total_valid_accuracy = total_valid_accuracy + valid_accuracy
+				valid_en_accuracy = self.acc.eval({self.train_task_mlp_inputs:
+					self.task_mlp_en_valid_batch, 
+					self.train_task_mlp_labels: self.task_mlp_en_valid_labels, self.keep_prob: 1.0}, session=session)
+				
+				valid_es_accuracy = self.acc.eval({self.train_task_mlp_inputs:
+					self.task_mlp_es_valid_batch, 
+					self.train_task_mlp_labels: self.task_mlp_es_valid_labels, self.keep_prob: 1.0}, session=session)
 
-				total_valid_accuracy = total_valid_accuracy / (len(self.task1_valid_batch) / self.task_batch_size )
+				print("Average valid EN acc at ", step, ": ", valid_en_accuracy)
+				print("Average valid ES acc at ", step, ": ", valid_es_accuracy)
 
-				print("Average valid accuracy at ", step, ": ", total_valid_accuracy)
-				summary = tf.Summary(value=[tf.Summary.Value(tag="task1_valid_accuracy", simple_value=total_valid_accuracy)])	
+				summary = tf.Summary(value=[tf.Summary.Value(tag="mlp_valid_EN_accuracy", simple_value=float(valid_en_accuracy))])
+				summary_writer.add_summary(summary, step)
+
+				summary = tf.Summary(value=[tf.Summary.Value(tag="mlp_valid_ES_accuracy", simple_value=float(valid_es_accuracy))])
 				summary_writer.add_summary(summary, step)
 
 			if step % 2000 == 0:
 				if step > 0:
 					average_loss /= 2000
-#					task1_average_loss /= 2000
+#					task_mlp_average_loss /= 2000
 				# The average loss is an estimate of the loss over the last 2000 batches.
 				print("Average loss at step ", step, ": ", average_loss)
-				print("Average loss of task1 at step ", step, ": ", task1_average_loss)
+				print("Average loss of task_mlp at step ", step, ": ", task_mlp_average_loss)
 				average_loss = 0
-				task1_average_loss = 0
+				task_mlp_average_loss = 0
 
+			
 			if step % 10000 == 0:
 				sim = self.similarity.eval(session=session)
 				for i in xrange(self.valid_size):
@@ -679,7 +755,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 						close_word = self.reverse_dictionary[nearest[k]]
 						log_str = "%s %s," % (log_str, close_word)
 					print(log_str)
-
+			
 		final_embeddings = session.run(self.normalized_embeddings)
 		self.final_embeddings = final_embeddings
 		return self
