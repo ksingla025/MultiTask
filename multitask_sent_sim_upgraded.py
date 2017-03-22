@@ -526,8 +526,10 @@ def BiRNN(lstm_bw_cell,x,seq_max_len=32):
 	seqlen = tf.placeholder(tf.int32, [None])
 
 	print "X is",x
+	# Permuting batch_size and n_steps
 	x = tf.transpose(x, [1, 0, 2])
 	print "transpose X is",x
+	# Reshaping to (n_steps*batch_size, n_input)
 	x = tf.reshape(x, [-1, 1])
 	print "reshape X is",x
 #    x = tf.split(axis=x, num_or_size_splits=n_steps, value=0)
