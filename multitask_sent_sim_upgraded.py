@@ -91,6 +91,30 @@ def pad(l, content, width):
 	l.extend([content] * (width - len(l)))
 	return l
 
+# loss function for pairwise loss
+def loss(x1, x2, y):
+    # Euclidean distance between x1,x2
+
+    x1norm = tf.nn.l2_normalize(x1, dim=1)
+    x2norm = tf.nn.l2_normalize(x2, dim=1)
+
+    cosine = tf.matmul(x1norm, tf.transpose(x2norm, [1, 0]))
+
+    # you can try margin parameters
+    margin = tf.constant(0.3	)     
+
+    labels = tf.to_float(y)
+
+    match_loss = 1 - cosine
+    mismatch_loss = tf.maximum(0., tf.subtract(cosine, margin), 'mismatch_term')
+
+    # if label is 1, only match_loss will count, otherwise mismatch_loss
+    loss = tf.add(tf.multiply(labels, match_loss), \
+                  tf.multiply((1 - labels), mismatch_loss), 'loss_add')
+
+    loss_mean = tf.reduce_mean(loss)
+
+    return loss_mean
 
 # data realtied class and batch/batch-data generator functions
 class DataBuilder(object):
@@ -409,7 +433,7 @@ def generate_batch_data_task_sentsim(max_length=32, neg_sample = 1):
 		sent1 = ",".join(str(x) for x in pair[0])
 		sent2 = ",".join(str(x) for x in pair[1])
 
-		batch_sentsim.write(sent1+","+sent2+",1,0\n")
+		batch_sentsim.write(sent1+","+sent2+",1\n")
 
 		for i in range(0,neg_sample):
 
@@ -418,8 +442,8 @@ def generate_batch_data_task_sentsim(max_length=32, neg_sample = 1):
 			rand_mono = pad(rand_mono[:max_length], 0, max_length)
 			negative = ",".join(str(x) for x in rand_mono)
 
-			batch_sentsim.write(sent1+","+negative+",0,1\n")
-			batch_sentsim.write(sent2+","+negative+",0,1\n")
+			batch_sentsim.write(sent1+","+negative+",0\n")
+			batch_sentsim.write(sent2+","+negative+",0\n")
 
 	batch_sentsim.close()
 
@@ -441,15 +465,15 @@ def generate_batch_data_task_sentsim(max_length=32, neg_sample = 1):
 			sent1 = ",".join(str(x) for x in pair[0])
 			sent2 = ",".join(str(x) for x in pair[1])
 
-			batch_valid.write(sent1+","+sent2+",1,0\n")
+			batch_valid.write(sent1+","+sent2+",1\n")
 
 			# we add a random sentence from monolingual sentence to say, that it's not similar to it
 			rand_mono = random.choice(data_mono)
 			rand_mono = pad(rand_mono[:max_length], 0, max_length)
 			negative = ",".join(str(x) for x in rand_mono)
 
-			batch_valid.write(sent1+","+negative+",0,1\n")
-			batch_valid.write(sent2+","+negative+",0,1\n")
+			batch_valid.write(sent1+","+negative+",0\n")
+			batch_valid.write(sent2+","+negative+",0\n")
 
 		batch_valid.close()
 
@@ -490,32 +514,44 @@ def generate_batch_task_mlp(data_task_mlp_train, task_batch_size, sen_length):
 	return batch, labels
 
 
-def BiRNN(lstm_bw_cell, lstm_fw_cell,x,seq_max_len=32):
+def BiRNN(lstm_bw_cell,x,seq_max_len=32):
 
     # Prepare data shape to match `bidirectional_rnn` function requirements
     # Current data input shape: (batch_size, n_steps, n_input)
     # Required shape: 'n_steps' tensors list of shape (batch_size, n_input)
 
     # Permuting batch_size and n_steps
-    x = tf.transpose(x, [1, 0, 2])
+	n_steps = 32
+	n_steps = 128
+	seqlen = tf.placeholder(tf.int32, [None])
+
+	print "X is",x
+	x = tf.transpose(x, [1, 0, 2])
+	print "transpose X is",x
+	x = tf.reshape(x, [-1, 1])
+	print "reshape X is",x
+#    x = tf.split(axis=x, num_or_size_splits=n_steps, value=0)
 #    # Reshaping to (n_steps*batch_size, n_input)
 #    x = tf.reshape(x, [-1, 1])
     # Split to get a list of 'n_steps' tensors of shape (batch_size, n_input)
-    x = tf.split(axis=0, num_or_size_splits=seq_max_len, value=x)
+	x = tf.split(axis=0, num_or_size_splits=seq_max_len, value=x)
 
-    # Get lstm cell output
+	print "X is",x
+	# Get lstm cell output
+	with tf.variable_scope('lstm1', reuse=True):
+		outputs, states = tf.contrib.rnn.static_rnn(lstm_bw_cell, x, dtype=tf.float32,
+			sequence_length=seqlen)
+#    try:
+#        outputs, _, _ = tf.nn.bidirectional_dynamic_rnn(lstm_fw_cell, lstm_bw_cell, x, dtype=tf.float32)
+#    except Exception: # Old TensorFlow version only returns outputs not states
+#        outputs = tf.nn.bidirectional_dynamic_rnn(lstm_fw_cell, lstm_bw_cell, x, dtype=tf.float32)
 
-    try:
-        outputs, _, _ = tf.nn.bidirectional_dynamic_rnn(lstm_fw_cell, lstm_bw_cell, x)
-    except Exception: # Old TensorFlow version only returns outputs not states
-        outputs = tf.nn.bidirectional_dynamic_rnn(lstm_fw_cell, lstm_bw_cell, x, dtype=tf.float32)
-
-    return outputs
+	return outputs
 
 class AttentionBasedAggregator(object):
 
 
-	def __init__(self,embedding_size,attention_size,n_hidden=128,lstm_layer=1):
+	def __init__(self,x,embedding_size,attention_size,n_hidden=200,lstm_layer=1):
 
 		self.trans_weights = tf.Variable(tf.zeros([embedding_size, attention_size]),
 			name='transformation_weights')
@@ -529,12 +565,32 @@ class AttentionBasedAggregator(object):
 		self.attention_size = attention_size
 		self.n_hidden = n_hidden # hidden layer num of features
 
+
 		if lstm_layer == 1:
 			# Define lstm cells with tensorflow
 			# Forward direction cell
-			self.lstm_bw_cell = rnn.BasicLSTMCell(self.n_hidden, forget_bias=1.0)
+			with tf.variable_scope('backward'):
+				self.lstm_bw_cell = tf.contrib.rnn.BasicLSTMCell(self.n_hidden)
+
+			print "X is",x
+			x = tf.transpose(x, [1, 0, 2])
+			print "transpose X is",x
+			x = tf.reshape(x, [-1, 1])
+			print "reshape X is",x
+
+			seqlen = tf.placeholder(tf.int32, [None])
+#    		x = tf.split(axis=x, num_or_size_splits=n_steps, value=0)
+#			Reshaping to (n_steps*batch_size, n_input)
+#			x = tf.reshape(x, [-1, 1])
+			# Split to get a list of 'n_steps' tensors of shape (batch_size, n_input)
+			x = tf.split(axis=0, num_or_size_splits=32, value=x)
+			
+			with tf.variable_scope('lstm1'):
+				outputs, states = tf.contrib.rnn.static_rnn(self.lstm_bw_cell, x, dtype=tf.float32,
+					sequence_length=seqlen)
 			# Backward direction cell
-			self.lstm_fw_cell = rnn.BasicLSTMCell(self.n_hidden, forget_bias=1.0)
+#			with tf.variable_scope('backward'):
+#				self.lstm_fw_cell = rnn.BasicLSTMCell(self.n_hidden, forget_bias=1.0)
 
 
 
@@ -542,7 +598,7 @@ class AttentionBasedAggregator(object):
 
 		print embed
 		embeddings_flat = tf.reshape(embed, [-1, self.embedding_size])
-
+		print "flat",embeddings_flat
 		#Now calculate the attention-weight vector.
 		keys_flat = tf.tanh(tf.add(tf.matmul(embeddings_flat,
 			self.trans_weights), self.trans_bias))
@@ -570,9 +626,14 @@ class AttentionBasedAggregator(object):
 
 	def attention_based_aggregator_with_lstm(self, embed):
 
-		outputs = BiRNN(self.lstm_bw_cell, self.lstm_fw_cell, embed)
 
-		embeddings_flat = tf.reshape(outputs, [-1, self.embedding_size])
+
+		outputs = BiRNN(self.lstm_bw_cell, embed)
+		print "RNN outputs",outputs
+
+		embeddings_flat = tf.concat(outputs, 0, name='lstm-concat')
+		print "RNN concat outputs",embeddings_flat
+#		embeddings_flat = tf.reshape(outputs, [-1, self.embedding_size])
 
 
 		#Now calculate the attention-weight vector.
@@ -593,6 +654,7 @@ class AttentionBasedAggregator(object):
 		context_vector = math_ops.reduce_sum(alignments * 
 			outputs, [1])
 
+		print "context_vector",context_vector
 		return context_vector
 
 
@@ -601,12 +663,12 @@ class AttentionBasedAggregator(object):
 
 class MultiTask(BaseEstimator, TransformerMixin):
 
-	def __init__(self, vocabulary_size=500000, embedding_size=200, batch_size=128,
+	def __init__(self, vocabulary_size=500000, embedding_size=200, batch_size=256,
 		multi_batch_size=5, task_batch_size=128, skip_window=5, skip_multi_window = 5,
 		num_sampled=64, min_count = 5, valid_size=16, valid_window=500, 
 		skip_gram_learning_rate=0.02, sen_length=20, sentsim_learning_rate=0.1,
 		num_steps=1400001, task_mlp_start=0, task_mlp_hidden=50, 
-		attention='true', n_hidden=128, attention_size = 150, joint='true', 
+		attention='true', n_hidden=200, attention_size = 150, joint='true', 
 		logs_path= 'test', max_length=32, lstm_layer=0, keep_prob = 0.7,
 		num_threads=10,num_classes=2):
 
@@ -671,7 +733,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 		self.train_sentsimx = tf.placeholder(tf.int32, [None,None], name='sentsim-inputx')
 		self.train_sentsimy = tf.placeholder(tf.int32, [None,None], name='sentsim-inputy')
-		self.train_sentsim_labels = tf.placeholder(tf.float32, [None, 2], name='sentsim-outlabel')
+		self.train_sentsim_labels = tf.placeholder(tf.float32, [None, 1], name='sentsim-outlabel')
 
 		self.keep_prob = tf.placeholder("float")
 
@@ -686,7 +748,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		if self.attention == 'true':
 
 			# initialize attention aggregator
-			self.attention_aggrgator = AttentionBasedAggregator(embedding_size = self.embedding_size, attention_size = self.attention_size,
+			self.attention_aggrgator = AttentionBasedAggregator(x=self.embedx,embedding_size = self.embedding_size, attention_size = self.attention_size,
 					n_hidden = self.n_hidden, lstm_layer = self.lstm_layer)
 
 			if self.lstm_layer == 1:
@@ -702,47 +764,21 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				self.contexty = self.attention_aggrgator.attention_based_aggregator(self.embedy)
 
 
-		#simple mean averaging
-		else:
 
-			self.contextx = math_ops.reduce_mean(self.embedx, [1])
-			self.contexty = math_ops.reduce_mean(self.embedy, [1])
-
-		#concat vectors of x & y sentence
-		print "context x",self.contextx
-		print "context y",self.contexty
-		self.context_vector = tf.concat([self.contextx, self.contexty], 1)
-		print "context xy", self.context_vector
-		self.context_vector = tf.nn.dropout(self.context_vector, self.keep_prob)
-
-		# Set model weights
-		self.W = tf.Variable(tf.zeros([self.embedding_size*2, self.num_classes]), name='Weights')
-		self.b = tf.Variable(tf.zeros([self.num_classes]), name='Bias')
-
-
-		# Construct model and encapsulating all ops into scopes, making
-		# Tensorboard's Graph visualization more convenient
-		with tf.name_scope('Task-Model'):
-    		# Model
-			self.pred = tf.nn.softmax(tf.matmul(self.context_vector, self.W) + self.b) # Softmax
 		with tf.name_scope('Task-Loss'):
+			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels)
     		# Minimize error using cross entropy
-			self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_sentsim_labels*tf.log(self.pred), axis=1))
+#			self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_sentsim_labels*tf.log(self.pred), axis=1))
 		with tf.name_scope('Task-SGD'):
 			self.learning_rate = tf.train.exponential_decay(self.sentsim_learning_rate, self.global_step,
 				50000, 0.98, staircase=True)
 
 
-		self.task_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.cost,
+			self.task_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.cost,
 				global_step=self.global_step)
 #			self.task_mlp_optimizer = tf.train.GradientDescentOptimizer(self.task_mlp_learning_rate).minimize(self.cost)
-		with tf.name_scope('Task-Accuracy'):
-    		# Accuracy
-			self.acc = tf.equal(tf.argmax(self.pred, 1), tf.argmax(self.train_sentsim_labels, 1))
-			self.acc = tf.reduce_mean(tf.cast(self.acc, tf.float32))
-
 		tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
-		tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
+#		tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
 
 
 	def _init_graph(self):
@@ -792,7 +828,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 						num_sampled=self.num_sampled,
 						num_classes=self.vocabulary_size))
 
-			with tf.name_scope('SGD'):
+			with tf.name_scope('Skip-gram-SGD'):
 				self.learning_rate = tf.train.exponential_decay(self.skip_gram_learning_rate, self.global_step,
                                            50000, 0.98, staircase=True)
 		
@@ -870,7 +906,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		key, value = reader.read(filename_queue)
 		
 		# default format of the file
-		record_defaults = [[]] * ((self.max_length*2)+2)
+		record_defaults = [[]] * ((self.max_length*2)+1)
 		record_defaults[1].append(0)
 
 		# extract all csv columns
@@ -881,10 +917,9 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		example2 = features[self.max_length:self.max_length*2]
 		
 		# extract label, whether they are similar/1 or not/0
-		label1 = tf.to_float(features[-2])
-		label2 = tf.to_float(features[-1])
+		label = tf.to_float(features[-1])
 
-		label = tf.stack([label1, label2])
+		label = tf.stack([label])
 
 		return example1, example2, label
 
@@ -948,6 +983,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 					self.train_sentsimy_batch, self.train_sentsim_labels_batch])
 				
 				# run the sentence similarity task
+
 				_, sentsim_loss, summary_sentsim = session.run([self.task_optimizer, self.cost,self.merged_summary_task_mlp],
 					feed_dict={self.train_sentsimx: train_sentsimx_batch, self.train_sentsimy: train_sentsimy_batch,
 					self.train_sentsim_labels: train_sentsim_labels_batch, self.keep_prob : 0.7 })
@@ -960,6 +996,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				average_loss += loss_val
 				sentsim_average_loss += sentsim_loss
 
+			'''
 			if step % 2000 == 0:
 
 				# read the validation data batch by batch and compute total accuracy
@@ -980,16 +1017,16 @@ class MultiTask(BaseEstimator, TransformerMixin):
 					 simple_value=float(valid_accuracy))])
 					
 				summary_writer.add_summary(summary, step)
+			'''
 
-
-			if step % 2000 == 0:
+			if step % 500 == 0:
 				if step > 0:
-					average_loss /= 2000
-					sentsim_average_loss /= 2000
+					average_loss /= 500
+					sentsim_average_loss /= 500
 #					task_mlp_average_loss /= 2000
 				# The average loss is an estimate of the loss over the last 2000 batches.
-				print("Average loss at step ", step, ": ", average_loss)
-				print("Average loss of task_mlp at step ", step, ": ", sentsim_average_loss)
+				print("Average loss of skip-gram step ", step, ": ", average_loss)
+				print("Average loss of sent-sim at step ", step, ": ", sentsim_average_loss)
 				average_loss = 0
 				sentsim_average_loss = 0
 
