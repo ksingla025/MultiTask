@@ -59,28 +59,60 @@ def pad(l, content, width):
 	return l
 
 # loss function for pairwise loss
+'''
 def loss(x1, x2, y):
     # Euclidean distance between x1,x2
-
-    x1norm = tf.nn.l2_normalize(x1, dim=1)
-    x2norm = tf.nn.l2_normalize(x2, dim=1)
-
-    cosine = tf.matmul(x1norm, tf.transpose(x2norm, [1, 0]))
+    l2diff = tf.sqrt( tf.reduce_sum(tf.square(tf.sub(x1, x2)),
+                                    reduction_indices=1))
 
     # you can try margin parameters
     margin = tf.constant(0.5)     
 
     labels = tf.to_float(y)
 
+    match_loss = tf.square(l2diff, 'match_term')
+    mismatch_loss = tf.maximum(0., tf.sub(margin, tf.square(l2diff)), 'mismatch_term')
+
+    # if label is 1, only match_loss will count, otherwise mismatch_loss
+    loss = tf.add(tf.mul(labels, match_loss), \
+                  tf.mul((1 - labels), mismatch_loss), 'loss_add')
+
+    loss_mean = tf.reduce_mean(loss)
+    return loss_mean
+'''
+
+
+def loss(x1, x2, y, margin = 0.0):
+    # Euclidean distance between x1,x2
+
+    dot_products = tf.reduce_sum(tf.multiply(x1,x2),axis=1)
+
+    x1_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x1,x1),axis=1))
+    x2_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x2,x2),axis=1))
+
+
+    cosine = dot_products / tf.multiply(x1_magnitudes,x2_magnitudes)
+
+    # you can try margin parameters
+    margin = tf.constant(margin)     
+
+    labels = tf.to_float(y)
+
     match_loss = 1 - cosine
     mismatch_loss = tf.maximum(0., tf.subtract(cosine, margin), 'mismatch_term')
+
+#    loss_match = tf.multiply(labels, match_loss)
+#    loss_mismatch = tf.multiply((1-labels), mismatch_loss)
 
     # if label is 1, only match_loss will count, otherwise mismatch_loss
     loss = tf.add(tf.multiply(labels, match_loss), \
                   tf.multiply((1 - labels), mismatch_loss), 'loss_add')
 
+#    loss_match_mean = tf.reduce_mean(loss_match)
+#    loss_mismatch_mean = tf.reduce_mean(loss_mismatch)
     loss_mean = tf.reduce_mean(loss)
 
+#    return loss_mean, loss_match_mean, loss_mismatch_mean
     return loss_mean
 
 def generate_batch_data_mono_skip(skip_window=5):
@@ -217,10 +249,7 @@ def BiRNN(lstm_bw_cell,x,seq_max_len=32):
 class AttentionBasedAggregator(object):
 
 
-	def __init__(self,x, embedding_size, attention_size, n_hidden=200, lstm_layer=1, keep_prob=0.7):
-
-		self.trans_weights = tf.Variable(tf.zeros([embedding_size, attention_size]),
-			name='transformation_weights')
+	def __init__(self,x, embedding_size, attention_size, n_hidden=100, lstm_layer=1, keep_prob=0.7):
 		
 		self.trans_bias = tf.Variable(tf.zeros([attention_size]), name='trans_bias')
 		
@@ -236,6 +265,9 @@ class AttentionBasedAggregator(object):
 		if lstm_layer == 1:
 			# Define lstm cells with tensorflow
 			# Forward direction cell
+			self.trans_weights = tf.Variable(tf.zeros([self.n_hidden, attention_size]),
+			name='transformation_weights')
+
 			with tf.variable_scope('backward'):
 				self.lstm_bw_cell = tf.contrib.rnn.BasicLSTMCell(self.n_hidden)
 
@@ -244,6 +276,10 @@ class AttentionBasedAggregator(object):
 			# Backward direction cell
 #			with tf.variable_scope('backward'):
 #				self.lstm_fw_cell = rnn.BasicLSTMCell(self.n_hidden, forget_bias=1.0)
+
+		else:
+			self.trans_weights = tf.Variable(tf.zeros([embedding_size, attention_size]),
+			name='transformation_weights')
 
 
 
@@ -302,19 +338,21 @@ class AttentionBasedAggregator(object):
 		context_vector = math_ops.reduce_sum(alignments * 
 			outputs, [1])
 
+
+
 		return context_vector
 
 
 class MultiTask(BaseEstimator, TransformerMixin):
 
 	def __init__(self, vocabulary_size=500000, embedding_size=200, batch_size=256,
-		multi_batch_size=5, task_batch_size=28, skip_window=5, skip_multi_window = 5,
+		multi_batch_size=5, task_batch_size=32, skip_window=5, skip_multi_window = 5,
 		num_sampled=64, min_count = 5, valid_size=16, valid_window=500, 
-		skip_gram_learning_rate=0.02, sen_length=20, sentsim_learning_rate=0.05,
+		skip_gram_learning_rate=0.01, sen_length=20, sentsim_learning_rate=0.01,
 		num_steps=1400001, task_mlp_start=0, task_mlp_hidden=50, 
-		attention='true', n_hidden=200, attention_size = 150, joint='true', 
-		logs_path= 'test', max_length=32, lstm_layer=0, keep_prob = 0.7,
-		num_threads=10,num_classes=2):
+		attention='true', n_hidden=100, attention_size = 150, joint='true', 
+		logs_path= 'test', max_length=32, lstm_layer=1, keep_prob = 0.7,
+		num_threads=10,num_classes=2, loss_margin=0.0):
 
 		# set parameters
 		self.vocabulary_size = vocabulary_size # size of vocabulary
@@ -345,6 +383,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		self.num_classes = num_classes
 		self.n_hidden = n_hidden # hiddent units for LSTM cell
 		self.max_length = max_length
+		self.loss_margin = loss_margin
 
 		# initiate graph
 		self.graph = tf.Graph()
@@ -416,7 +455,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 
 		with tf.name_scope('Task-Loss'):
-			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels)
+#			self.cost, self.cost_match, self.cost_mismatch = loss(self.contextx, self.contexty, self.train_sentsim_labels)
+			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels,self.loss_margin)
     		# Minimize error using cross entropy
 #			self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_sentsim_labels*tf.log(self.pred), axis=1))
 		with tf.name_scope('Task-SGD'):
@@ -428,6 +468,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				global_step=self.global_step)
 
 		tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
+#		tf.summary.scalar("task_loss_match", self.cost_match, collections=['polarity-task'])
+#		tf.summary.scalar("task_loss_mismatch", self.cost_mismatch, collections=['polarity-task'])
 #		tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
 
 
