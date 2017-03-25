@@ -88,31 +88,31 @@ def loss(x1, x2, y, margin = 0.0,batch_size=32):
 
     x1_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x1,x1),axis=1))
     x2_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x2,x2),axis=1))
-
+    labels = tf.to_float(y)
 
     cosine = dot_products / tf.multiply(x1_magnitudes,x2_magnitudes)
 
     # you can try margin parameters
     margin = tf.constant(margin)     
 
-    total_labels = tf.constant(batch_size, dtype=tf.float32)
     labels = tf.to_float(y)
-    labels1 = tf.reduce_sum(labels)
-    labels0 = tf.subtract(total_labels,labels1)
+    total_labels = tf.to_float(tf.shape(labels)[0])
+    match_size = tf.reduce_sum(labels)
+    mismatch_size = tf.subtract(total_labels,match_size)
 
 
     match_loss = 1 - cosine
     mismatch_loss = tf.maximum(0., tf.subtract(cosine, margin), 'mismatch_term')
 
-    loss_match = tf.multiply(labels, match_loss)
-    loss_mismatch = tf.multiply((1-labels), mismatch_loss)
+    loss_match = tf.reduce_sum(tf.multiply(labels, match_loss))
+    loss_mismatch = tf.reduce_sum(tf.multiply((1-labels), mismatch_loss))
 
     # if label is 1, only match_loss will count, otherwise mismatch_loss
     loss = tf.add(tf.multiply(labels, match_loss), \
                   tf.multiply((1 - labels), mismatch_loss), 'loss_add')
 
-    loss_match_mean = tf.reduce_sum(tf.divide(loss_match,labels1))
-    loss_mismatch_mean = tf.reduce_sum(tf.divide(loss_mismatch,labels0))
+    loss_match_mean = tf.divide(loss_match, match_size)
+    loss_mismatch_mean = tf.divide(loss_mismatch,mismatch_size)
 
     loss_mean = tf.reduce_mean(loss)
 
