@@ -82,8 +82,7 @@ def loss(x1, x2, y):
 '''
 
 
-def loss(x1, x2, y, margin = 0.0):
-    # Euclidean distance between x1,x2
+def loss(x1, x2, y, margin = 0.0,batch_size=32):
 
     dot_products = tf.reduce_sum(tf.multiply(x1,x2),axis=1)
 
@@ -96,24 +95,29 @@ def loss(x1, x2, y, margin = 0.0):
     # you can try margin parameters
     margin = tf.constant(margin)     
 
+    total_labels = tf.constant(batch_size, dtype=tf.float32)
     labels = tf.to_float(y)
+    labels1 = tf.reduce_sum(labels)
+    labels0 = tf.subtract(total_labels,labels1)
+
 
     match_loss = 1 - cosine
     mismatch_loss = tf.maximum(0., tf.subtract(cosine, margin), 'mismatch_term')
 
-#    loss_match = tf.multiply(labels, match_loss)
-#    loss_mismatch = tf.multiply((1-labels), mismatch_loss)
+    loss_match = tf.multiply(labels, match_loss)
+    loss_mismatch = tf.multiply((1-labels), mismatch_loss)
 
     # if label is 1, only match_loss will count, otherwise mismatch_loss
     loss = tf.add(tf.multiply(labels, match_loss), \
                   tf.multiply((1 - labels), mismatch_loss), 'loss_add')
 
-#    loss_match_mean = tf.reduce_mean(loss_match)
-#    loss_mismatch_mean = tf.reduce_mean(loss_mismatch)
+    loss_match_mean = tf.reduce_sum(tf.divide(loss_match,labels1))
+    loss_mismatch_mean = tf.reduce_sum(tf.divide(loss_mismatch,labels0))
+
     loss_mean = tf.reduce_mean(loss)
 
-#    return loss_mean, loss_match_mean, loss_mismatch_mean
-    return loss_mean
+    return loss_mean, loss_match_mean, loss_mismatch_mean
+#    return loss_mean
 
 def generate_batch_data_mono_skip(skip_window=5):
 
@@ -455,8 +459,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 
 		with tf.name_scope('Task-Loss'):
-#			self.cost, self.cost_match, self.cost_mismatch = loss(self.contextx, self.contexty, self.train_sentsim_labels)
-			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels,self.loss_margin)
+			self.cost, self.cost_match, self.cost_mismatch = loss(self.contextx, self.contexty, self.train_sentsim_labels)
+#			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels,self.loss_margin)
     		# Minimize error using cross entropy
 #			self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_sentsim_labels*tf.log(self.pred), axis=1))
 		with tf.name_scope('Task-SGD'):
@@ -468,8 +472,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				global_step=self.global_step)
 
 		tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
-#		tf.summary.scalar("task_loss_match", self.cost_match, collections=['polarity-task'])
-#		tf.summary.scalar("task_loss_mismatch", self.cost_mismatch, collections=['polarity-task'])
+		tf.summary.scalar("task_loss_match", self.cost_match, collections=['polarity-task'])
+		tf.summary.scalar("task_loss_mismatch", self.cost_mismatch, collections=['polarity-task'])
 #		tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
 
 
