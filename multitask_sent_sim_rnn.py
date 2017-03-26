@@ -4,13 +4,13 @@
 
 ''' main file for training word embeddings and get sentence embeddings	'''
 
-#from __future__ import print_function
 
 #standard python imports
 import sys
 reload(sys)
 sys.setdefaultencoding('utf-8')
 
+#standard python imports
 from collections import Counter
 import math
 import os
@@ -41,20 +41,22 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from utils.twokenize import *
 from path import *
 
+############### Utility Functions ####################
+
 def preprocess_text(text):
 	
 	text = text.strip()
 	text = tokenizeRawTweetText(text)
 	text = ' '.join(text)
 	text = text.lower()
-#	text = text.lower()
-
 	return text
 
 def _attn_mul_fun(keys, query):
-  return math_ops.reduce_sum(keys * query, [2])
+
+	return math_ops.reduce_sum(keys * query, [2])
 
 def pad(l, content, width):
+	
 	l.extend([content] * (width - len(l)))
 	return l
 
@@ -83,38 +85,58 @@ def loss(x1, x2, y):
 
 
 def loss(x1, x2, y, margin = 0.0,batch_size=32):
+    ''' 
+	calucaltes loss depending on cosine similarity and labels
+	if label == 1:
+		loss = 1 - cosine
+	else:
+		loss = max(0,cosine - margin)
+	x1 : a 2D tensor ( batch_size, embed)
+	x2 : a 2D tensor
+	y : batch label tensor
+	margin : margin for negtive samples loss
+    '''
 
+    #take dot product of x1,x2 : [batch_size,1]
     dot_products = tf.reduce_sum(tf.multiply(x1,x2),axis=1)
 
+    # calulcate magnitude of two 1d tensors
     x1_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x1,x1),axis=1))
     x2_magnitudes = tf.sqrt(tf.reduce_sum(tf.multiply(x2,x2),axis=1))
-    labels = tf.to_float(y)
 
+    # calculate cosine distances between them
     cosine = dot_products / tf.multiply(x1_magnitudes,x2_magnitudes)
 
-    # you can try margin parameters
+    # conver it into float and make it a row vector
+    labels = tf.to_float(y)
+    labels = tf.transpose(labels,[1,0])
+
+
+    # you can try margin parameters, margin helps to set bound for mismatch cosine
     margin = tf.constant(margin)     
 
-    labels = tf.to_float(y)
-    total_labels = tf.to_float(tf.shape(labels)[0])
+    # calculate number of match and mismatch pairs
+    total_labels = tf.to_float(tf.shape(labels)[1])
     match_size = tf.reduce_sum(labels)
     mismatch_size = tf.subtract(total_labels,match_size)
 
-
+    # loss culation for match and mismatch separately
     match_loss = 1 - cosine
     mismatch_loss = tf.maximum(0., tf.subtract(cosine, margin), 'mismatch_term')
 
+    # combined loss for a batch
     loss_match = tf.reduce_sum(tf.multiply(labels, match_loss))
     loss_mismatch = tf.reduce_sum(tf.multiply((1-labels), mismatch_loss))
 
+    # combined total loss
     # if label is 1, only match_loss will count, otherwise mismatch_loss
     loss = tf.add(tf.multiply(labels, match_loss), \
                   tf.multiply((1 - labels), mismatch_loss), 'loss_add')
 
-    loss_match_mean = tf.divide(loss_match, match_size)
-    loss_mismatch_mean = tf.divide(loss_mismatch,mismatch_size)
-
-    loss_mean = tf.reduce_mean(loss)
+    # take average for losses according to size
+    loss_match_mean = tf.divide(loss_match,match_size)
+    loss_mismatch_mean = tf.divide(loss_mismatch, mismatch_size)
+    loss_mean = tf.divide(tf.reduce_sum(loss),total_labels)
 
     return loss_mean, loss_match_mean, loss_mismatch_mean
 #    return loss_mean
@@ -435,8 +457,9 @@ class MultiTask(BaseEstimator, TransformerMixin):
 		if self.attention == 'true':
 
 			# initialize attention aggregator
-			self.attention_aggrgator = AttentionBasedAggregator(x=self.embedx, embedding_size=self.embedding_size, attention_size=self.attention_size,
-					n_hidden=self.n_hidden, lstm_layer=self.lstm_layer, keep_prob=self.keep_prob)
+			with tf.name_scope('AttentionBasedAggregator'):
+				self.attention_aggrgator = AttentionBasedAggregator(x=self.embedx, embedding_size=self.embedding_size,
+					attention_size=self.attention_size, n_hidden=self.n_hidden, lstm_layer=self.lstm_layer, keep_prob=self.keep_prob)
 
 			# if using lstm layer
 			if self.lstm_layer == 1:
@@ -459,7 +482,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 
 		with tf.name_scope('Task-Loss'):
-			self.cost, self.cost_match, self.cost_mismatch = loss(self.contextx, self.contexty, self.train_sentsim_labels)
+			self.cost_mean, self.cost_match_mean, self.cost_mismatch_mean = loss(self.contextx, self.contexty, self.train_sentsim_labels)
 #			self.cost = loss(self.contextx, self.contexty, self.train_sentsim_labels,self.loss_margin)
     		# Minimize error using cross entropy
 #			self.cost = tf.reduce_mean(-tf.reduce_sum(self.train_sentsim_labels*tf.log(self.pred), axis=1))
@@ -468,13 +491,12 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				50000, 0.98, staircase=True)
 
 
-			self.task_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.cost,
+			self.task_optimizer = tf.train.GradientDescentOptimizer(self.learning_rate).minimize(self.cost_mean,
 				global_step=self.global_step)
 
-		tf.summary.scalar("task_loss", self.cost, collections=['polarity-task'])
-		tf.summary.scalar("task_loss_match", self.cost_match, collections=['polarity-task'])
-		tf.summary.scalar("task_loss_mismatch", self.cost_mismatch, collections=['polarity-task'])
-#		tf.summary.scalar("task_train_accuracy", self.acc, collections=['polarity-task'])
+		tf.summary.scalar("task_loss_divide", self.cost_mean, collections=['polarity-task'])
+		tf.summary.scalar("task_loss_match_divide", self.cost_match_mean, collections=['polarity-task'])
+		tf.summary.scalar("task_loss_mismatch_divide", self.cost_mismatch_mean, collections=['polarity-task'])
 
 
 	def _init_graph(self):
@@ -534,8 +556,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 			tf.summary.scalar("skip_loss", self.skip_loss, collections=['skip-gram'])
 
 			#------------------------ task_mlp Loss and Optimizer ---------------------
-
-			self.sentsim_task_graph()
+			with tf.name_scope('Sentsim-graph'):
+				self.sentsim_task_graph()
 
 
 			# Compute the cosine similarity between minibatch examples and all embeddings.
@@ -689,7 +711,7 @@ class MultiTask(BaseEstimator, TransformerMixin):
 
 #				print contextx.shape
 #				print contexty.shape
-				_, sentsim_loss, summary_sentsim = session.run([self.task_optimizer, self.cost,self.merged_summary_task_mlp],
+				_, sentsim_loss, summary_sentsim = session.run([self.task_optimizer, self.cost_mean,self.merged_summary_task_mlp],
 					feed_dict={self.train_sentsimx: train_sentsimx_batch, self.train_sentsimy: train_sentsimy_batch,
 					self.train_sentsim_labels: train_sentsim_labels_batch, self.keep_prob : 0.7 })
 
@@ -701,8 +723,8 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				average_loss += loss_val
 				sentsim_average_loss += sentsim_loss
 
-			'''
-			if step % 2000 == 0:
+			
+			if step % 1000 == 0:
 
 				# read the validation data batch by batch and compute total accuracy
 				total_valid_accuracy = 0
@@ -711,18 +733,27 @@ class MultiTask(BaseEstimator, TransformerMixin):
 				valid_sentsimx_batch, valid_sentsimy_batch, valid_sentsim_labels_batch = session.run([self.valid_sentsimx_batch,
 					self.valid_sentsimy_batch, self.valid_sentsim_labels_batch])
 
-				valid_accuracy = self.acc.eval({self.train_sentsimx: valid_sentsimx_batch, 
-						self.train_sentsimy: valid_sentsimy_batch, self.train_sentsim_labels: valid_sentsim_labels_batch,
-						self.keep_prob: 1.0}, session=session)
 
+				cost_mean, cost_match_mean, cost_mismatch_mean = session.run([self.cost_mean, self.cost_match_mean, self.cost_mismatch_mean], feed_dict={self.train_sentsimx: valid_sentsimx_batch,
+					self.train_sentsimy: valid_sentsimy_batch, self.train_sentsim_labels: valid_sentsim_labels_batch,
+					self.keep_prob : 0.7 })
+				#valid_accuracy = self.acc.eval({self.train_sentsimx: valid_sentsimx_batch, 
+				#		self.train_sentsimy: valid_sentsimy_batch, self.train_sentsim_labels: valid_sentsim_labels_batch,
+				#		self.keep_prob: 1.0}, session=session)
 
-				print("Average valid acc of sent sim at ", step, ": ", valid_accuracy)
+				summary = tf.Summary(value=[tf.Summary.Value(tag="valid-loss",
+					 simple_value=float(cost_mean))])
 
-				summary = tf.Summary(value=[tf.Summary.Value(tag="valid_accuracy",
-					 simple_value=float(valid_accuracy))])
+				summary_match = tf.Summary(value=[tf.Summary.Value(tag="valid-match-loss",
+					 simple_value=float(cost_match_mean))])
+
+				summary_mismatch = tf.Summary(value=[tf.Summary.Value(tag="valid-mismatch-loss",
+					 simple_value=float(cost_mismatch_mean))])
 					
 				summary_writer.add_summary(summary, step)
-			'''
+				summary_writer.add_summary(summary_match, step)
+				summary_writer.add_summary(summary_mismatch, step)
+			
 
 			if step % 500 == 0:
 				if step > 0:
